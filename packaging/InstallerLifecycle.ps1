@@ -15,7 +15,7 @@ try {
             Where-Object { $_.ExecutablePath -eq $exe } |
             ForEach-Object {
                 try { [Diagnostics.Process]::GetProcessById([int]$_.ProcessId) }
-                catch [ArgumentException] { } # Процесс успел завершиться.
+                catch [ArgumentException] { Write-Verbose 'Процесс уже завершился.' }
             }
     )
     if ($processes.Count -eq 0) { exit 0 }
