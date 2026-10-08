@@ -42,6 +42,7 @@ public partial class App : Application
     {
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.GetCultureInfo("ru-RU");
         FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement), new FrameworkPropertyMetadata(XmlLanguage.GetLanguage("ru-RU")));
+        System.Windows.Forms.Application.ThreadException += (_, e) => store?.Log(e.Exception);
         DispatcherUnhandledException += (_, e) => { store?.Log(e.Exception); Shutdown(1); e.Handled = true; };
         TaskScheduler.UnobservedTaskException += (_, e) => { store?.Log(e.Exception); e.SetObserved(); };
     }
@@ -60,6 +61,7 @@ public partial class App : Application
             }
             if (e.Args.Contains("--probe") || e.Args.Contains("--self-test") || e.Args.Contains("--ui-test"))
             { await RunCheckAsync(e.Args); Shutdown(0); return; }
+            if (e.Args.Contains("--tray-hover-test")) { await RunTrayHoverCheckAsync(e.Args); Shutdown(0); return; }
             if (e.Args.Contains("--window")) { await RunWindowHostAsync(e.Args); return; }
             instance = new Mutex(true, "Local\\EgoistBattery-v1", out var created);
             activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\EgoistBattery-activate-v1");
@@ -72,7 +74,7 @@ public partial class App : Application
             viewModel.Updated += devices =>
             {
                 tray.Update(devices, viewModel.HiddenTrayDevices, viewModel.Notifications, viewModel.LowThreshold);
-                try { store.WriteJson("tray-state.json", new { UpdatedAt = DateTimeOffset.Now, DeviceIconCount = tray.DeviceIconCount, WindowCreated = window is not null, BackgroundIntervalSeconds = viewModel.EffectiveRefreshSeconds, CardCount = viewModel.Cards.Count, Devices = TrayPolicy.VisibleDevices(devices, viewModel.HiddenTrayDevices).Select(x => new { x.Name, Level = x.Reading.Label }) }); }
+                try { store.WriteJson("tray-state.json", new { UpdatedAt = DateTimeOffset.Now, DeviceIconCount = tray.DeviceIconCount, WindowCreated = window is not null, BackgroundIntervalSeconds = viewModel.EffectiveRefreshSeconds, CardCount = viewModel.DeviceRowCount, Devices = TrayPolicy.VisibleDevices(devices, viewModel.HiddenTrayDevices).Select(x => new { x.Name, Level = x.Reading.Label }) }); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { store.Log(ex); }
             };
             activationWait = ThreadPool.RegisterWaitForSingleObject(activateEvent, (_, _) => Dispatcher.BeginInvoke(ShowWindow), null, Timeout.Infinite, false);
@@ -148,7 +150,8 @@ public partial class App : Application
     private async Task RunCheckAsync(string[] args)
     {
         if (store is null) throw new InvalidOperationException();
-        var monitor = new DeviceMonitor();
+        var fixture = Argument(args, "--fixture");
+        IDeviceSource monitor = fixture is null ? new DeviceMonitor() : new FixtureDeviceSource(fixture);
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var results = await monitor.ScanAsync(budget.Token);
         var devices = SnapshotMerger.Merge(results.SelectMany(x => x.Devices));
@@ -159,7 +162,8 @@ public partial class App : Application
         ApplyAccessibilityColors();
         RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
         var vm = new MainViewModel(monitor, store, lifetime.Token);
-        if (vm.EffectiveRefreshSeconds < 60 || vm.Cards.Count != 0) throw new InvalidOperationException("Фоновый режим создаёт интерфейс или слишком часто опрашивает устройства.");
+        Controls.Motion.Suspended = true;
+        if (vm.EffectiveRefreshSeconds < 60 || vm.DeviceRowCount != 0) throw new InvalidOperationException("Фоновый режим создаёт интерфейс или слишком часто опрашивает устройства.");
         var testWindow = new MainWindow(vm) { Opacity = 0, ShowActivated = false, ShowInTaskbar = false, PermitClose = true };
         testWindow.Show();
         try
@@ -179,24 +183,39 @@ public partial class App : Application
                 if (trayCheck.DeviceIconCount != TrayPolicy.VisibleDevices(devices).Count) throw new InvalidOperationException("Значки не восстановились после подключения.");
                 foreach (var value in new[] { "10", "10+", "20", "90", "100", "?", "battery" })
                 {
-                    using var trayIcon = TrayController.DrawIcon(value, int.TryParse(value.TrimEnd('+'), out var level) ? level : null, ChargeState.Discharging, pixelSize: 64);
+                    using var trayIcon = TrayController.DrawIcon(value, int.TryParse(value.TrimEnd('+'), out var level) ? level : null, value == "10+" ? BatteryTone.Charging : value == "10" ? BatteryTone.Critical : value == "20" ? BatteryTone.Low : value is "?" or "battery" ? BatteryTone.Unknown : BatteryTone.Normal, pixelSize: 64);
                     using var trayBitmap = trayIcon.ToBitmap(); trayBitmap.Save(Path.Combine(store.DirectoryPath, $"tray-{value.Replace("?", "unknown")}.png"), System.Drawing.Imaging.ImageFormat.Png);
                 }
                 SaveTrayPreview(store.DirectoryPath);
-                SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "devices.png"));
+                if (!TrayController.CanLocateIcons) throw new InvalidOperationException("В этой версии .NET у NotifyIcon нет полей для определения положения значка; панель трея работает по запасному способу.");
+                trayCheck.CheckFlyout(TrayPolicy.VisibleDevices(devices).FirstOrDefault()?.Id);
+                foreach (var flyoutScale in new[] { 1f, 1.5f, 2f })
+                {
+                    using var preview = trayCheck.RenderFlyoutPreview(flyoutScale, TrayPolicy.VisibleDevices(devices).FirstOrDefault()?.Id);
+                    preview.Save(Path.Combine(store.DirectoryPath, $"tray-flyout-{flyoutScale * 100:0}.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "devices.png"));
                 vm.Page = "settings";
                 testWindow.UpdateLayout();
+                var firstRow = vm.Items.OfType<DeviceRow>().FirstOrDefault();
+                if (firstRow is not null)
+                {
+                    firstRow.IsExpanded = true;
+                    vm.ForceSnapshotSave(); await vm.RefreshAsync();
+                    if (!ReferenceEquals(vm.Items.OfType<DeviceRow>().FirstOrDefault(x => x.Id == firstRow.Id), firstRow) || !firstRow.IsExpanded) throw new InvalidOperationException("Обновление списка сбросило раскрытую строку.");
+                    firstRow.IsExpanded = false;
+                }
                 var intervalSlider = VisualDescendants(testWindow.RootContent).OfType<Slider>().First(x => x.Maximum == 120);
                 var originalInterval = vm.RefreshSeconds;
                 Slider.IncreaseLarge.Execute(null, intervalSlider);
                 if (vm.RefreshSeconds <= originalInterval) throw new InvalidOperationException("Ползунок интервала не изменяет настройки.");
                 intervalSlider.Value = originalInterval;
-                SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "settings.png"));
+                await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "settings.png"));
                 vm.Page = "devices"; vm.Query = "__no_such_device__"; testWindow.UpdateLayout();
                 if (!vm.Empty) throw new InvalidOperationException("Не работает поиск устройств.");
-                SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "empty.png"));
+                await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "empty.png"));
                 vm.Query = ""; vm.Filter = "all"; testWindow.Width = 890; testWindow.UpdateLayout();
-                SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "compact.png"));
+                await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "compact.png"));
                 var layouts = new List<object>();
                 testWindow.WindowStyle = WindowStyle.None;
                 testWindow.ResizeMode = ResizeMode.NoResize;
@@ -210,11 +229,25 @@ public partial class App : Application
                         await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
                         testWindow.UpdateLayout();
                         AssertLayout(testWindow.RootContent);
-                        SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, $"{page}-fullhd-{scale * 100:0}.png"), scale);
+                        await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, $"{page}-fullhd-{scale * 100:0}.png"), scale);
                         layouts.Add(new { Page = page, Scale = scale, Width = testWindow.RootContent.ActualWidth, Height = testWindow.RootContent.ActualHeight });
                     }
                 }
                 store.WriteJson("layout-check.json", new { Success = true, Cases = layouts, Checks = "Видимые тексты и кнопки: горизонтальные границы, отсутствие обрезания текста; 1920×1080 при масштабе 100/125/150/200%" });
+            }
+            if (args.Contains("--ui-test"))
+            {
+                // Кадры движения: список появляется строка за строкой, шкала и число набегают.
+                Controls.Motion.Suspended = false;
+                vm.Page = "devices"; vm.Filter = "connected"; vm.Query = "__no_such_device__"; await Settle(); vm.Query = "";
+                var clock = Stopwatch.StartNew();
+                foreach (var ms in new[] { 40, 180, 360, 1000 })
+                {
+                    var wait = ms - (int)clock.ElapsedMilliseconds; if (wait > 0) await Task.Delay(wait);
+                    await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+                    SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, $"motion-{ms}.png"));
+                }
+                Controls.Motion.Suspended = true;
             }
             testWindow.Hide();
             if (vm.EffectiveRefreshSeconds < 60) throw new InvalidOperationException("После скрытия окна не включился экономный режим.");
@@ -224,6 +257,50 @@ public partial class App : Application
         }
         finally { testWindow.Close(); }
     }
+    /// <summary>
+    /// Проверка панели по наведению на настоящих значках трея: сообщение движения мыши отправляется значку, курсор подменяется,
+    /// физическая мышь не двигается. На 2–4 секунды в трее появляются временные значки.
+    /// </summary>
+    private async Task RunTrayHoverCheckAsync(string[] args)
+    {
+        if (store is null) throw new InvalidOperationException();
+        var fixture = Argument(args, "--fixture");
+        IDeviceSource monitor = fixture is null ? new DeviceMonitor() : new FixtureDeviceSource(fixture);
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var devices = SnapshotMerger.Merge((await monitor.ScanAsync(budget.Token)).SelectMany(x => x.Devices));
+        using var trayCheck = new TrayController(() => { }, () => { }, () => { });
+        trayCheck.Update(devices, [], false, 20);
+        await Task.Delay(600);
+        var steps = new List<string>();
+        try
+        {
+            steps.Add($"Значков: {trayCheck.DeviceIconCount}; поля NotifyIcon найдены: {TrayController.CanLocateIcons}; устройств: {devices.Count}");
+            if (trayCheck.FirstIcon() is not { } first) throw new InvalidOperationException("Оболочка Windows не вернула положение значка (значков: " + trayCheck.DeviceIconCount + ").");
+            steps.Add($"Положение значка: {first.Icon}");
+            trayCheck.CursorSource = () => new System.Drawing.Point(first.Icon.Left + first.Icon.Width / 2, first.Icon.Top + first.Icon.Height / 2);
+            if (!trayCheck.PostHover(first.Id)) throw new InvalidOperationException("Сообщение наведения не отправлено.");
+            var shown = false;
+            for (var i = 0; i < 30 && !shown; i++) { await Task.Delay(100); shown = trayCheck.FlyoutVisible; }
+            steps.Add($"Панель появилась: {shown}");
+            if (!shown) throw new InvalidOperationException("Панель не появилась после наведения.");
+            await Task.Delay(500);
+            if (!trayCheck.FlyoutVisible) throw new InvalidOperationException("Панель исчезла, пока курсор над значком.");
+            trayCheck.CursorSource = () => new System.Drawing.Point(5, 5);
+            var hidden = false;
+            for (var i = 0; i < 30 && !hidden; i++) { await Task.Delay(100); hidden = !trayCheck.FlyoutVisible; }
+            steps.Add($"Панель скрылась после ухода курсора: {hidden}");
+            if (!hidden) throw new InvalidOperationException("Панель не скрылась после ухода курсора.");
+            store.WriteJson("tray-hover-check.json", new { Success = true, Steps = steps, Finished = DateTimeOffset.Now });
+        }
+        catch (Exception ex)
+        {
+            store.WriteJson("tray-hover-check.json", new { Success = false, Error = ex.Message, Steps = steps, Finished = DateTimeOffset.Now });
+            throw;
+        }
+    }
+
+    /// <summary>Даёт доиграть коротким анимациям интерфейса перед снимком кадра.</summary>
+    private async Task Settle() { await Task.Delay(350); await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle); }
     private static void AssertLayout(FrameworkElement root)
     {
         foreach (var element in VisualDescendants(root).OfType<FrameworkElement>())
@@ -261,20 +338,35 @@ public partial class App : Application
     }
     private static void SaveTrayPreview(string directory)
     {
-        using var bitmap = new System.Drawing.Bitmap(540, 144);
-        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-        graphics.Clear(System.Drawing.Color.FromArgb(23, 28, 31));
-        using var font = new System.Drawing.Font("Segoe UI", 12, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Pixel);
-        using var text = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(190, 206, 200));
-        var labels = new[] { "DualSense", "G304", "100%", "нет данных" };
-        var values = new[] { "10+", "90", "100", "?" };
-        for (var i = 0; i < values.Length; i++)
+        // Две панели задач (тёмная и светлая), значки в реальных размерах 16 и 24 пикселя и в увеличении.
+        var cases = new (string Value, int? Percent, BatteryTone Tone, string Caption)[]
         {
-            using var icon = TrayController.DrawIcon(values[i], i == 3 ? null : int.Parse(values[i].TrimEnd('+')), i == 0 ? ChargeState.Charging : ChargeState.Discharging, pixelSize: 40);
-            graphics.DrawIcon(icon, new System.Drawing.Rectangle(28 + i * 130, 18, 40, 40));
-            using var smallIcon = TrayController.DrawIcon(values[i], i == 3 ? null : int.Parse(values[i].TrimEnd('+')), i == 0 ? ChargeState.Charging : ChargeState.Discharging, pixelSize: 24);
-            graphics.DrawIcon(smallIcon, new System.Drawing.Rectangle(32 + i * 130, 73, 24, 24));
-            graphics.DrawString(labels[i], font, text, 22 + i * 130, 112);
+            ("90", 90, BatteryTone.Normal, "90%"), ("10+", 10, BatteryTone.Charging, "10+ заряжается"), ("15", 15, BatteryTone.Low, "15% низкий"),
+            ("8", 8, BatteryTone.Critical, "8% критический"), ("100", 100, BatteryTone.Charging, "100%"), ("?", null, BatteryTone.Unknown, "нет данных")
+        };
+        using var bitmap = new System.Drawing.Bitmap(cases.Length * 120 + 24, 2 * 150 + 8);
+        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+        using var font = new System.Drawing.Font("Segoe UI", 11, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Pixel);
+        foreach (var light in new[] { false, true })
+        {
+            var top = light ? 154 : 0;
+            graphics.FillRectangle(new System.Drawing.SolidBrush(light ? System.Drawing.Color.FromArgb(243, 243, 243) : System.Drawing.Color.FromArgb(28, 33, 36)), 0, top, bitmap.Width, 146);
+            using var text = new System.Drawing.SolidBrush(light ? System.Drawing.Color.FromArgb(70, 80, 85) : System.Drawing.Color.FromArgb(170, 184, 190));
+            for (var i = 0; i < cases.Length; i++)
+            {
+                var (value, percent, tone, caption) = cases[i];
+                var x = 24 + i * 120;
+                foreach (var (size, y, shown) in new[] { (16, 14, 16), (24, 14 + 16 + 12, 24) })
+                {
+                    using var icon = TrayController.DrawIcon(value, percent, tone, light, size);
+                    graphics.DrawIcon(icon, new System.Drawing.Rectangle(x + (size == 16 ? 0 : 28), top + 12, shown, shown));
+                }
+                using var big = TrayController.DrawIcon(value, percent, tone, light, 64);
+                graphics.DrawIcon(big, new System.Drawing.Rectangle(x, top + 44, 64, 64));
+                graphics.DrawString(caption, font, text, x - 4, top + 118);
+            }
         }
         bitmap.Save(Path.Combine(directory, "tray-preview.png"), System.Drawing.Imaging.ImageFormat.Png);
     }
@@ -320,9 +412,10 @@ public partial class App : Application
     private void ApplyAccessibilityColors()
     {
         if (!SystemParameters.HighContrast) return;
-        foreach (var key in new[] { "Background", "Surface", "Raised" }) Resources[key] = SystemColors.WindowBrush;
-        foreach (var key in new[] { "Text", "Muted", "Accent" }) Resources[key] = SystemColors.WindowTextBrush;
-        Resources["Line"] = SystemColors.WindowTextBrush;
+        // В режиме высокой контрастности цвет состояния заменяют текст и форма: значения берутся из системной палитры.
+        foreach (var key in new[] { "Background", "Surface", "Raised", "RaisedHover", "AmberWash", "OnAccent" }) Resources[key] = SystemColors.WindowBrush;
+        foreach (var key in new[] { "Text", "Muted", "Faint", "Accent", "Amber", "Coral", "Tone.Normal", "Tone.Charging", "Tone.Low", "Tone.Critical", "Tone.Error", "Tone.Unknown" }) Resources[key] = SystemColors.WindowTextBrush;
+        foreach (var key in new[] { "Line", "LineStrong", "Track" }) Resources[key] = SystemColors.GrayTextBrush;
     }
     protected override void OnExit(ExitEventArgs e)
     {

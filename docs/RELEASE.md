@@ -8,7 +8,7 @@
 pwsh -NoProfile -File ./build.ps1
 ```
 
-Команда собирает приложение, выполняет 70 тестов, публикует одиночный EXE, формирует установщик и portable-архив и записывает `SHA256SUMS.txt` в `artifacts/1.0.0`. Для EXE и архива без установщика:
+Команда собирает приложение, выполняет 87 проверок, публикует одиночный EXE, формирует установщик и portable-архив и записывает `SHA256SUMS.txt` в `artifacts/1.0.0`. Для EXE и архива без установщика:
 
 ```powershell
 pwsh -NoProfile -File ./build.ps1 -SkipInstaller

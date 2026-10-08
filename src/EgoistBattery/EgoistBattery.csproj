@@ -21,6 +21,9 @@
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Resource Include="Assets/Fonts/Unbounded.ttf" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../EgoistBattery.Core/EgoistBattery.Core.csproj" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
   </ItemGroup>

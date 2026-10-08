@@ -2,31 +2,49 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
+using EgoistBattery.Controls;
+using EgoistBattery.Core;
+using EgoistBattery.Services;
 using EgoistBattery.ViewModels;
 
 namespace EgoistBattery;
 
 public partial class MainWindow : Window
 {
-    public static readonly DependencyProperty CardWidthProperty = DependencyProperty.Register(nameof(CardWidth), typeof(double), typeof(MainWindow), new PropertyMetadata(420d));
-    public double CardWidth { get => (double)GetValue(CardWidthProperty); private set => SetValue(CardWidthProperty, value); }
-    public static readonly DependencyProperty CompactLayoutProperty = DependencyProperty.Register(nameof(CompactLayout), typeof(bool), typeof(MainWindow), new PropertyMetadata(false));
-    public bool CompactLayout { get => (bool)GetValue(CompactLayoutProperty); private set => SetValue(CompactLayoutProperty, value); }
     internal bool PermitClose { get; set; }
     internal MainWindow(MainViewModel viewModel)
     {
         InitializeComponent(); DataContext = viewModel;
         IsVisibleChanged += (_, _) => viewModel.SetWindowVisible(IsVisible && WindowState != WindowState.Minimized);
         StateChanged += (_, _) => { viewModel.SetWindowVisible(IsVisible && WindowState != WindowState.Minimized); if (PermitClose && WindowState == WindowState.Minimized) Close(); };
-        SizeChanged += (_, _) => CompactLayout = ActualHeight < 680;
+        viewModel.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MainViewModel.IsBusy)) UpdateSpin(viewModel.IsBusy); };
         SourceInitialized += (_, _) =>
         {
-            if (!SystemParameters.HighContrast) { var enabled = 1; DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref enabled, sizeof(int)); }
+            if (!SystemParameters.HighContrast) TintTitleBar();
             FitWorkingArea();
         };
+        Loaded += (_, _) => BuildTrayLegend();
     }
+
+    /// <summary>Значок обновления вращается, пока идёт чтение; при отключённых эффектах Windows остаётся неподвижным.</summary>
+    private void UpdateSpin(bool busy) =>
+        Spin.BeginAnimation(RotateTransform.AngleProperty, busy && Motion.Enabled ? new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(900)) { RepeatBehavior = RepeatBehavior.Forever } : null);
+
+    /// <summary>Заголовок окна красится в цвет фона: Windows 11 принимает цвета заголовка, Windows 10 игнорирует вызов.</summary>
+    private void TintTitleBar()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        var dark = 1; DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
+        static int Rgb(string key) { var c = ((SolidColorBrush)Application.Current.FindResource(key)).Color; return c.R | c.G << 8 | c.B << 16; }
+        var caption = Rgb("Background"); var text = Rgb("Text"); var border = Rgb("Line");
+        DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int)); DwmSetWindowAttribute(handle, 36, ref text, sizeof(int)); DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
+    }
+
     private void FitWorkingArea()
     {
         var bounds = System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(this).Handle).WorkingArea;
@@ -44,18 +62,29 @@ public partial class MainWindow : Window
         base.OnDpiChanged(oldDpi, newDpi);
         FitWorkingArea();
     }
-    private void DeviceViewportSizeChanged(object sender, SizeChangedEventArgs e) => UpdateCardWidth();
-    private void DeviceViewportScrollChanged(object sender, System.Windows.Controls.ScrollChangedEventArgs e)
-    { if (e.ViewportWidthChange != 0) UpdateCardWidth(); }
-    private void UpdateCardWidth()
+
+    /// <summary>Образцы значков в настройках рисует настоящий отрисовщик трея, поэтому они не расходятся с реальными.</summary>
+    private void BuildTrayLegend()
     {
-        if (DeviceViewport is null) return;
-        var width = DeviceViewport.ViewportWidth > 0 ? DeviceViewport.ViewportWidth : DeviceViewport.ActualWidth - 20;
-        if (width < 100) return;
-        var columns = Math.Clamp((int)(width / 385), 1, 3);
-        var target = Math.Max(280, Math.Floor(width / columns) - 16);
-        if (Math.Abs(CardWidth - target) > 0.5) CardWidth = target;
+        if (TrayLegend.Children.Count > 0) return;
+        foreach (var (value, percent, tone, caption) in new (string, int?, BatteryTone, string)[]
+        {
+            ("90", 90, BatteryTone.Normal, "Заряд устройства"), ("10+", 10, BatteryTone.Charging, "Идёт зарядка; «+» — интервал 10–19%"),
+            ("15", 15, BatteryTone.Low, "Ниже порога предупреждения"), ("?", null, BatteryTone.Unknown, "Процент недоступен")
+        })
+        {
+            using var icon = TrayController.DrawIcon(value, percent, tone, false, 64);
+            var source = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            source.Freeze();
+            var image = new System.Windows.Controls.Image { Source = source, Width = 40, Height = 40, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+            RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+            var panel = new StackPanel { Orientation = Orientation.Horizontal, Width = 236, Margin = new Thickness(0, 0, 8, 12) };
+            panel.Children.Add(image);
+            panel.Children.Add(new TextBlock { Text = caption, Style = (Style)FindResource("Meta"), TextWrapping = TextWrapping.Wrap, MaxWidth = 170, VerticalAlignment = VerticalAlignment.Center });
+            TrayLegend.Children.Add(panel);
+        }
     }
+
     private void ExportClick(object sender, RoutedEventArgs e)
     {
         var dialog = new Microsoft.Win32.SaveFileDialog { Filter = "JSON (*.json)|*.json", FileName = "Заряд устройств.json" };
