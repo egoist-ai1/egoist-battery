@@ -9,7 +9,15 @@ try {
     $exe = Join-Path ([IO.Path]::GetFullPath($InstallDirectory)) 'EgoistBattery.exe'
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { exit 0 }
     if ((Get-Item -LiteralPath $exe).VersionInfo.ProductName -ne 'Egoist Battery') { throw 'В папке находится другая программа.' }
-    $processes = @(Get-Process -Name EgoistBattery -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+    # Get-Process.Path пуст у 64-битного процесса из 32-битного NSIS/PowerShell.
+    $processes = @(
+        Get-CimInstance Win32_Process -Filter "Name='EgoistBattery.exe'" |
+            Where-Object { $_.ExecutablePath -eq $exe } |
+            ForEach-Object {
+                try { [Diagnostics.Process]::GetProcessById([int]$_.ProcessId) }
+                catch [ArgumentException] { } # Процесс успел завершиться.
+            }
+    )
     if ($processes.Count -eq 0) { exit 0 }
     $stopRequest = Start-Process -FilePath $exe -ArgumentList '--exit' -WindowStyle Hidden -PassThru
     if (-not $stopRequest.WaitForExit(10000) -or $stopRequest.ExitCode -ne 0) { throw 'Команда выхода не завершилась.' }
