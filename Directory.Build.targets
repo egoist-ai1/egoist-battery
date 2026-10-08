@@ -1,0 +1,10 @@
+<Project>
+  <!-- Не меняем версию WinRT SDK при фиксации .NET runtime. -->
+  <Target Name="PinEgoistRuntime" BeforeTargets="ProcessFrameworkReferences" Condition="'$(EgoistRuntimeVersion)' != ''">
+    <ItemGroup>
+      <FrameworkReference Condition="'%(FrameworkReference.Identity)' == 'Microsoft.NETCore.App' Or '%(FrameworkReference.Identity)' == 'Microsoft.WindowsDesktop.App' Or '%(FrameworkReference.Identity)' == 'Microsoft.WindowsDesktop.App.WPF' Or '%(FrameworkReference.Identity)' == 'Microsoft.WindowsDesktop.App.WindowsForms'">
+        <RuntimeFrameworkVersion>$(EgoistRuntimeVersion)</RuntimeFrameworkVersion>
+      </FrameworkReference>
+    </ItemGroup>
+  </Target>
+</Project>

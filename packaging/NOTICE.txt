@@ -1,0 +1,17 @@
+Egoist Battery — Copyright (c) 2026 Egoist AI, MIT License (see LICENSE).
+
+This distribution includes:
+- .NET 8.0.31 runtime, Microsoft and .NET contributors.
+  See DOTNET-LICENSE.txt and DOTNET-THIRD-PARTY-NOTICES.txt.
+- Microsoft Windows Desktop runtime 8.0.31.
+  See WINDOWS-DESKTOP-LICENSE.txt.
+- CommunityToolkit.Mvvm 8.4.0, .NET Foundation and Contributors, MIT.
+  See COMMUNITYTOOLKIT-LICENSE.txt.
+  https://github.com/CommunityToolkit/dotnet/blob/v8.4.0/License.md
+- The Setup executable uses NSIS 3.13 installer stubs.
+  See NSIS-LICENSE.txt.
+  https://nsis.sourceforge.io/License
+
+Windows device APIs and HID protocols provide readings locally.
+Logitech and Sony are trademarks of their respective owners.
+The product is not affiliated with these hardware manufacturers.

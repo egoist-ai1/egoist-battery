@@ -1,0 +1,60 @@
+using System.Buffers.Binary;
+using EgoistBattery.Core;
+
+var checks = 0;
+void Check(bool condition, string name) { checks++; if (!condition) throw new InvalidOperationException(name); }
+for (byte raw = 0; raw <= 10; raw++)
+{
+    var reading = PlayStationParser.ParseDualSenseStatus(raw, "test");
+    Check(reading.Minimum == raw * 10 && reading.Maximum == Math.Min(raw * 10 + 9, 100), $"DualSense интервал {raw}");
+    Check(reading.State == ChargeState.Discharging, "Разрядка");
+    var charging = PlayStationParser.ParseDualSenseStatus((byte)(raw | 0x10), "test");
+    Check(charging.Minimum == reading.Minimum && charging.State == ChargeState.Charging, "USB не означает 100%");
+}
+Check(PlayStationParser.ParseDualSenseStatus(0x20, "test").Label == "100%", "Завершение зарядки");
+foreach (byte bad in new byte[] { 0xA7, 0xB9, 0xF1 }) Check(PlayStationParser.ParseDualSenseStatus(bad, "test").State == ChargeState.Error && !PlayStationParser.ParseDualSenseStatus(bad, "test").HasLevel, "Ошибку нельзя выдавать за заряд");
+Check(!PlayStationParser.ParseDualSenseStatus(0x0F, "test").HasLevel, "Неизвестная ёмкость");
+Check(!PlayStationParser.ParseDualSenseStatus(0x37, "test").HasLevel, "Неизвестное состояние");
+var usb = new byte[64]; usb[0] = 1; usb[53] = 0x17;
+Check(PlayStationParser.Parse(usb, false, true).Label == "70–79%", "USB смещение батареи");
+Check(!PlayStationParser.Parse(usb, true, true).HasLevel, "BT report 01 не содержит батареи даже при длине64");
+Check(!PlayStationParser.Parse(usb.AsSpan(0, 54), false, true).HasLevel, "Обрезанный USB");
+Check(!PlayStationParser.Parse([], false, true).HasLevel, "Пустой отчёт");
+var bt = new byte[78]; bt[0] = 0x31; bt[54] = 0x18; bt[55] = 0x02;
+BinaryPrimitives.WriteUInt32LittleEndian(bt.AsSpan(74), PlayStationParser.BluetoothCrc(bt.AsSpan(0, 74)));
+Check(PlayStationParser.Parse(bt, true, true).Label == "80–89%", "BT смещение54 вместо55");
+bt[8] ^= 1;
+Check(!PlayStationParser.Parse(bt, true, true).HasLevel, "Повреждённый CRC");
+Check(!BatteryReading.Percentage(101, "test", ReadingQuality.WindowsCache).HasLevel, "Windows 101 = неизвестно");
+Check(BatteryReading.Percentage(0, "test", ReadingQuality.Live).HasLevel, "Нулевой заряд валиден");
+Check(!BatteryReading.Percentage(-1, "test", ReadingQuality.Live).HasLevel, "Отрицательный процент");
+var low = PlayStationParser.ParseDualSenseStatus(0x01, "test");
+Check(low.IsLow(20), "Предупреждение по верхней границе");
+Check(!PlayStationParser.ParseDualSenseStatus(0x02, "test").IsLow(20), "20–29 ещё не целиком ниже20");
+Check(!PlayStationParser.ParseDualSenseStatus(0x11, "test").IsLow(20), "Заряжающийся контроллер без уведомления");
+var stale = BatteryReading.Percentage(90, "Windows", ReadingQuality.WindowsCache);
+var merged = SnapshotMerger.Merge([new("a", "DualSense", "Контроллер", "USB", true, low, "container"), new("b", "DualSense", "Контроллер", "Bluetooth", true, stale, "container")]);
+Check(merged.Count == 1 && merged[0].Reading == low && merged[0].Transport.Contains(" + "), "Живое HID выше кеша Windows");
+var distinct = SnapshotMerger.Merge([new("1", "DualSense", "Контроллер", "USB", true, low, "a"), new("2", "DualSense", "Контроллер", "USB", true, low, "b")]);
+Check(distinct.Count == 2, "Одинаковые имена не объединяются");
+var mouse = new DeviceSnapshot("mouse", "G304", "Мышь", "LIGHTSPEED", true, LogitechParser.Parse([90, 50, 0], 0x1000));
+Check(mouse.Reading.Label == "90%", "Процент HID++ 1000");
+Check(LogitechParser.Parse([34, 4, 1], 0x1004).State == ChargeState.Charging, "Состояние HID++ 1004");
+var coarse = LogitechParser.Parse([0, 2, 0], 0x1004);
+Check(coarse.Label == "Низкий" && coarse.HasData && !coarse.HasLevel, "Категория не подменяется вымышленным процентом");
+Check(!LogitechParser.Parse([0, 80, 0], 0x1000).HasData, "HID++0 неизвестен, а не разряжен");
+Check(!LogitechParser.Parse([200, 4, 0], 0x1004).HasData, "HID++ недопустимый процент");
+Check(LogitechParser.Parse([90, 0, 5], 0x1000).State == ChargeState.Error, "Ошибка батареи HID++");
+Check(!LogitechParser.Parse([90], 0x1000).HasLevel, "Обрезанный HID++");
+Check(LogitechParser.IsResponse([0x11, 1, 3, 0x19, 90, 8, 0], 1, 3, 0x19), "Соответствующий ответ HID++");
+Check(!LogitechParser.IsResponse([0x11, 1, 3, 0x18, 90, 8, 0], 1, 3, 0x19), "Чужой softwareId HID++");
+Check(!LogitechParser.IsResponse([0x11, 2, 3, 0x19, 90, 8, 0], 1, 3, 0x19), "Чужой слот HID++");
+Check(TrayPolicy.VisibleDevices([mouse]).Count == 1, "Подключённая мышь получает значок");
+Check(TrayPolicy.VisibleDevices([mouse with { Connected = false }]).Count == 0, "Отключённая мышь теряет значок");
+Check(TrayPolicy.VisibleDevices([mouse], ["mouse"]).Count == 0, "Скрытие отдельного значка");
+Check(TrayPolicy.VisibleDevices([mouse, mouse with { Id = "mouse2" }]).Count == 2, "Два устройства получают два значка");
+Check(TrayPolicy.VisibleDevices([mouse with { Kind = "Приёмник", Reading = BatteryReading.Missing("USB", "Батарея не объявлена") }]).Count == 0, "Приёмник не выдаётся за включённую мышь");
+var bridged = SnapshotMerger.Merge([new("pnp", "Headset HFP", "Устройство", "Bluetooth", false, stale, "container"), new("bt", "Headset", "Наушники", "Bluetooth", true, BatteryReading.Missing("Windows", "Нет поля"), "container", "ABC")]);
+Check(bridged.Count == 1 && bridged[0].Connected && bridged[0].Reading == stale && bridged[0].Name == "Headset", "Кеш PnP объединяется с реальным состоянием Bluetooth");
+Check(bridged[0].Id == "identity:ABC", "Стабильный идентификатор значка независимо от источника");
+Console.WriteLine($"PASS: {checks} проверок протокола, точности и объединения устройств.");

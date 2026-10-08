@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+artifacts/
+backups/
+.vs/
+reports/
+tools/
+*.user
+*.suo
+*.tmp
+.env*
+auth.json
