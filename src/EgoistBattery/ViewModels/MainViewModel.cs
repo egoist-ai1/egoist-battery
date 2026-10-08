@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using EgoistBattery.Core;
@@ -45,16 +46,19 @@ internal sealed partial class DeviceRow : ObservableObject
     [ObservableProperty] private string timeLine = "";
     [ObservableProperty] private bool canShowTrayIcon;
     [ObservableProperty] private bool trayShown;
+    [ObservableProperty] private bool useSpectrum;
     [ObservableProperty] private string trayHint = "";
     [ObservableProperty] private string spoken = "";
     [ObservableProperty] private bool isExpanded;
+    public string IgnoreName => $"Скрыть из списка: {Name}";
     public string ExpandName => $"Как получено показание: {Name}";
     public override string ToString() => Spoken;
-    public string TrayGlyph => TrayShown ? "\uE7B3" : "\uED1A";
-    partial void OnNameChanged(string value) => OnPropertyChanged(nameof(ExpandName));
+    // \u0411\u0443\u043B\u0430\u0432\u043A\u0430: \u0437\u0430\u043A\u0440\u0435\u043F\u043B\u0451\u043D\u043D\u043E\u0435 \u0443\u0441\u0442\u0440\u043E\u0439\u0441\u0442\u0432\u043E \u043F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0435\u0442 \u0437\u043D\u0430\u0447\u043E\u043A \u0442\u0440\u0435\u044F; \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u2014 \u043F\u043E \u043F\u0440\u0430\u0432\u0438\u043B\u0443 \u00ABDualSense, \u0438\u043D\u0430\u0447\u0435 \u043D\u0430\u0438\u043C\u0435\u043D\u044C\u0448\u0438\u0439 \u0437\u0430\u0440\u044F\u0434\u00BB.
+    public string TrayGlyph => TrayShown ? "\uE840" : "\uE718";
+    partial void OnNameChanged(string value) { OnPropertyChanged(nameof(ExpandName)); OnPropertyChanged(nameof(IgnoreName)); }
     partial void OnTrayShownChanged(bool value) => OnPropertyChanged(nameof(TrayGlyph));
 
-    public void Apply(DeviceSnapshot device, bool hiddenInTray, int threshold)
+    public void Apply(DeviceSnapshot device, bool pinned, int threshold)
     {
         var reading = device.Reading;
         var tone = DevicePresentation.ToneOf(reading, threshold);
@@ -63,7 +67,11 @@ internal sealed partial class DeviceRow : ObservableObject
         IsMeasured = Group == DeviceGroup.Measured;
         Glyph = device.Kind switch { "Мышь" => "\uE962", "Клавиатура" => "\uE765", "Наушники" => "\uE7F6", "Контроллер" => "\uE7FC", "Компьютер" => "\uE7F8", "Bluetooth" => "\uE702", _ => "\uE772" };
         IsCharging = IsMeasured && tone == BatteryTone.Charging;
-        ToneBrush = (Brush)Application.Current.FindResource(IsMeasured || tone == BatteryTone.Error ? $"Tone.{tone}" : "Tone.Unknown");
+        // Цвет числа и шкалы идёт по спектру уровня; при высокой контрастности остаются системные цвета.
+        var level = IsMeasured && tone != BatteryTone.Error && !SystemParameters.HighContrast ? BatterySpectrum.LevelOf(reading) : null;
+        UseSpectrum = level is not null;
+        if (level is { } shade) { var (r, g, b) = BatterySpectrum.At(shade); var brush = new SolidColorBrush(Color.FromRgb(r, g, b)); brush.Freeze(); ToneBrush = brush; }
+        else ToneBrush = (Brush)Application.Current.FindResource(IsMeasured || tone == BatteryTone.Error ? $"Tone.{tone}" : "Tone.Unknown");
         NumeralValue = IsMeasured && reading.HasLevel && reading.Minimum == reading.Maximum ? reading.Minimum : null;
         NumeralText = IsMeasured ? reading.Label : "—";
         NumeralSize = NumeralValue is null && NumeralText.Length > 5 ? 20 : 26;
@@ -80,8 +88,8 @@ internal sealed partial class DeviceRow : ObservableObject
         SourceLine = $"Источник: {reading.Source}";
         TimeLine = $"Прочитано в {reading.ObservedAt.ToLocalTime():HH:mm:ss}";
         CanShowTrayIcon = TrayPolicy.VisibleDevices([device]).Count != 0;
-        TrayShown = !hiddenInTray;
-        TrayHint = !CanShowTrayIcon ? "" : hiddenInTray ? "Показать значок этого устройства в трее" : "Скрыть значок этого устройства из трея";
+        TrayShown = pinned;
+        TrayHint = !CanShowTrayIcon ? "" : pinned ? "Закреплено для значка в трее. Нажмите, чтобы открепить" : "Показывать это устройство в значке трея";
         Spoken = $"{device.Name}: {(IsMeasured ? reading.Label : "заряд не передаётся")}. {Meta}";
     }
 }
@@ -94,7 +102,7 @@ internal sealed partial class MainViewModel : ObservableObject
     private readonly CancellationToken token;
     private readonly Dictionary<string, DeviceRow> rows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<DeviceGroup, GroupHeader> headers = Enum.GetValues<DeviceGroup>().ToDictionary(x => x, x => new GroupHeader(x));
-    private IReadOnlyList<DeviceSnapshot> snapshots = [];
+    private IReadOnlyList<DeviceSnapshot> allSnapshots = [], snapshots = [];
     private bool windowVisible;
     private bool loadedOnce;
     private string? savedSnapshotKey;
@@ -133,7 +141,9 @@ internal sealed partial class MainViewModel : ObservableObject
     public string EmptyTitle => Query.Length > 0 ? "Ничего не найдено" : Filter == "battery" ? "Данных батареи пока нет" : "Подключите устройство";
     public string EmptyHint => Query.Length > 0 ? "Измените запрос или сбросьте фильтры." : Filter == "battery" ? "Ни одно из подключённых устройств не передаёт заряд. Попробуйте фильтр «Подключённые»." : "Мышь, клавиатура или геймпад появятся здесь сами: программа повторяет чтение автоматически.";
     public string VersionText => $"Версия {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
-    public IReadOnlyList<string> HiddenTrayDevices => settings.HiddenTrayDevices;
+    public string? PinnedTrayDevice => settings.PinnedTrayDevice;
+    public int IgnoredCount => settings.IgnoredDevices.Count;
+    public bool HasIgnored => IgnoredCount > 0;
     public IReadOnlyList<DeviceSnapshot> Snapshots => snapshots;
     public int EffectiveRefreshSeconds => EcoMode && !windowVisible ? Math.Max(60, RefreshSeconds) : RefreshSeconds;
 
@@ -161,10 +171,11 @@ internal sealed partial class MainViewModel : ObservableObject
         {
             RefreshSeconds = latest.RefreshSeconds; LowThreshold = latest.LowThreshold;
             Notifications = latest.Notifications; EcoMode = latest.EcoMode;
-            settings.HiddenTrayDevices.Clear(); settings.HiddenTrayDevices.AddRange(latest.HiddenTrayDevices.Distinct());
+            settings.PinnedTrayDevice = latest.PinnedTrayDevice;
+            settings.IgnoredDevices.Clear(); settings.IgnoredDevices.AddRange(latest.IgnoredDevices.Distinct(StringComparer.OrdinalIgnoreCase));
         }
         finally { loadingSettings = false; }
-        ApplyFilter(); Updated?.Invoke(snapshots); PollingIntervalChanged?.Invoke();
+        Refilter(); ApplyFilter(); { OnPropertyChanged(nameof(IgnoredCount)); OnPropertyChanged(nameof(HasIgnored)); } Updated?.Invoke(snapshots); PollingIntervalChanged?.Invoke();
     }
 
     [RelayCommand]
@@ -179,11 +190,9 @@ internal sealed partial class MainViewModel : ObservableObject
             budget.CancelAfter(TimeSpan.FromSeconds(20));
             var results = await monitor.ScanAsync(budget.Token);
             var errors = results.Where(x => x.Error is not null).Select(x => x.Error).ToArray();
-            snapshots = SnapshotMerger.Merge(results.SelectMany(x => x.Devices));
+            allSnapshots = SnapshotMerger.Merge(results.SelectMany(x => x.Devices));
             loadedOnce = true;
-            ConnectedCount = snapshots.Count(x => x.Connected);
-            MeasuredCount = snapshots.Count(x => x.Connected && x.Reading.HasData);
-            UnknownCount = ConnectedCount - MeasuredCount;
+            Refilter();
             Notice = string.Join(" ", errors!);
             var observed = monitor is SnapshotDeviceSource && snapshots.Count > 0 ? snapshots.Max(x => x.Reading.ObservedAt).ToLocalTime() : DateTimeOffset.Now;
             Status = $"Обновлено в {observed:HH:mm:ss} · следующее чтение через {EffectiveRefreshSeconds} с";
@@ -220,7 +229,7 @@ internal sealed partial class MainViewModel : ObservableObject
 
     private void ClearSnapshots()
     {
-        snapshots = []; loadedOnce = true; rows.Clear(); Items.Clear();
+        allSnapshots = snapshots = []; loadedOnce = true; rows.Clear(); Items.Clear();
         ConnectedCount = MeasuredCount = UnknownCount = 0;
     }
 
@@ -228,10 +237,32 @@ internal sealed partial class MainViewModel : ObservableObject
     [RelayCommand] private void SelectPage(string value) { Page = value; }
     [RelayCommand] private void ResetFilters() { Query = ""; Filter = "connected"; }
     [RelayCommand] private void ToggleExpanded(DeviceRow row) { row.IsExpanded = !row.IsExpanded; }
+    /// <summary>Закрепляет устройство для значка трея или снимает закрепление.</summary>
     [RelayCommand] private void ToggleTrayDevice(string id)
     {
-        if (!settings.HiddenTrayDevices.Remove(id)) settings.HiddenTrayDevices.Add(id);
+        settings.PinnedTrayDevice = string.Equals(settings.PinnedTrayDevice, id, StringComparison.OrdinalIgnoreCase) ? null : id;
         SaveSettings(); ApplyFilter(); Updated?.Invoke(snapshots);
+    }
+    [RelayCommand] private void IgnoreDevice(string id)
+    {
+        if (!settings.IgnoredDevices.Contains(id, StringComparer.OrdinalIgnoreCase)) settings.IgnoredDevices.Add(id);
+        if (string.Equals(settings.PinnedTrayDevice, id, StringComparison.OrdinalIgnoreCase)) settings.PinnedTrayDevice = null;
+        SaveSettings(); Refilter(); ApplyFilter(); { OnPropertyChanged(nameof(IgnoredCount)); OnPropertyChanged(nameof(HasIgnored)); } Updated?.Invoke(snapshots);
+    }
+    [RelayCommand] private void RestoreIgnored()
+    {
+        settings.IgnoredDevices.Clear();
+        SaveSettings(); Refilter(); ApplyFilter(); { OnPropertyChanged(nameof(IgnoredCount)); OnPropertyChanged(nameof(HasIgnored)); } Updated?.Invoke(snapshots);
+    }
+
+    /// <summary>Применяет список скрытых устройств к последнему снимку и пересчитывает счётчики.</summary>
+    private void Refilter()
+    {
+        var ignored = new HashSet<string>(settings.IgnoredDevices, StringComparer.OrdinalIgnoreCase);
+        snapshots = allSnapshots.Where(x => !ignored.Contains(x.Id)).ToArray();
+        ConnectedCount = snapshots.Count(x => x.Connected);
+        MeasuredCount = snapshots.Count(x => x.Connected && x.Reading.HasData);
+        UnknownCount = ConnectedCount - MeasuredCount;
     }
     partial void OnQueryChanged(string value) { ApplyFilter(); OnPropertyChanged(nameof(CanResetFilters)); }
     partial void OnFilterChanged(string value)
@@ -273,7 +304,7 @@ internal sealed partial class MainViewModel : ObservableObject
                 desired.Add(headers[group]);
             }
             if (!rows.TryGetValue(device.Id, out var row)) rows[device.Id] = row = new DeviceRow(device.Id, Math.Min(desired.Count, 9) * 50);
-            row.Apply(device, settings.HiddenTrayDevices.Contains(device.Id, StringComparer.OrdinalIgnoreCase), LowThreshold);
+            row.Apply(device, string.Equals(settings.PinnedTrayDevice, device.Id, StringComparison.OrdinalIgnoreCase), LowThreshold);
             desired.Add(row);
         }
         foreach (var gone in rows.Keys.Where(id => snapshots.All(x => !string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase))).ToArray()) rows.Remove(gone);

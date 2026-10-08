@@ -8,7 +8,10 @@ internal sealed class Settings
     public int LowThreshold { get; set; } = 20;
     public bool Notifications { get; set; } = true;
     public bool EcoMode { get; set; } = true;
-    public List<string> HiddenTrayDevices { get; set; } = [];
+    /// <summary>Устройство, закреплённое для значка трея; пусто — выбирается автоматически.</summary>
+    public string? PinnedTrayDevice { get; set; }
+    /// <summary>Устройства, скрытые из списка и панели (старые, ненужные).</summary>
+    public List<string> IgnoredDevices { get; set; } = [];
 }
 
 internal sealed class SettingsStore(string directory)
@@ -23,7 +26,7 @@ internal sealed class SettingsStore(string directory)
             var settings = File.Exists(path) ? JsonSerializer.Deserialize<Settings>(File.ReadAllText(path)) ?? new() : new();
             settings.RefreshSeconds = Math.Clamp(settings.RefreshSeconds, 5, 120);
             settings.LowThreshold = Math.Clamp(settings.LowThreshold, 5, 50);
-            settings.HiddenTrayDevices ??= [];
+            settings.IgnoredDevices ??= [];
             return settings;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)

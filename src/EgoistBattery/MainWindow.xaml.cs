@@ -67,13 +67,13 @@ public partial class MainWindow : Window
     private void BuildTrayLegend()
     {
         if (TrayLegend.Children.Count > 0) return;
-        foreach (var (value, percent, tone, caption) in new (string, int?, BatteryTone, string)[]
+        foreach (var (value, percent, charging, caption) in new (string, int, bool, string)[]
         {
-            ("90", 90, BatteryTone.Normal, "Заряд устройства"), ("10+", 10, BatteryTone.Charging, "Идёт зарядка; «+» — интервал 10–19%"),
-            ("15", 15, BatteryTone.Low, "Ниже порога предупреждения"), ("?", null, BatteryTone.Unknown, "Процент недоступен")
+            ("90", 90, false, "Цвет по заряду: лайм — много"), ("45", 45, false, "Жёлтый — середина"),
+            ("12", 12, false, "Красный — мало"), ("10+", 10, true, "Белая обводка — идёт зарядка; «+» — интервал 10–19%")
         })
         {
-            using var icon = TrayController.DrawIcon(value, percent, tone, false, 64);
+            using var icon = TrayController.DrawIcon(value, percent / 100d, charging, false, 64);
             var source = Imaging.CreateBitmapSourceFromHIcon(icon.Handle, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
             source.Freeze();
             var image = new System.Windows.Controls.Image { Source = source, Width = 40, Height = 40, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };

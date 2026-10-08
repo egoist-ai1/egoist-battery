@@ -26,7 +26,7 @@
                             <TextBlock x:Name="NameText" Text="{Binding Name}" FontSize="14.5" FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding Meta}" Style="{StaticResource Meta}" TextWrapping="Wrap" Margin="0,3,0,0"/>
                         </StackPanel>
-                        <c:LevelRuler x:Name="Ruler" Grid.Column="2" Height="22" VerticalAlignment="Center" Margin="0,0,24,0" Cells="{Binding RulerCells}" Solid="{Binding RulerSolid}" Interval="{Binding RulerInterval}" Fill="{Binding ToneBrush}" Track="{DynamicResource Track}" Delay="{Binding RevealDelay}"/>
+                        <c:LevelRuler x:Name="Ruler" Grid.Column="2" Height="22" VerticalAlignment="Center" Margin="0,0,24,0" Cells="{Binding RulerCells}" Solid="{Binding RulerSolid}" Interval="{Binding RulerInterval}" Fill="{Binding ToneBrush}" Spectrum="{Binding UseSpectrum}" Track="{DynamicResource Track}" Delay="{Binding RevealDelay}"/>
                         <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <TextBlock x:Name="Bolt" Style="{StaticResource Glyph}" Text="&#xE945;" Foreground="{DynamicResource Accent}" FontSize="17" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="Collapsed"/>
                             <c:CountText x:Name="Numeral" Value="{Binding NumeralValue}" Fallback="{Binding NumeralText}" Delay="{Binding RevealDelay}" FontFamily="{DynamicResource DataFont}" FontSize="{Binding NumeralSize}" FontWeight="SemiBold" Foreground="{Binding ToneBrush}" Typography.NumeralAlignment="Tabular" VerticalAlignment="Center"/>
@@ -34,6 +34,9 @@
                         <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0">
                             <Button x:Name="TrayButton" Style="{StaticResource IconButton}" Visibility="{Binding CanShowTrayIcon, Converter={StaticResource BoolVisibility}}" Command="{Binding DataContext.ToggleTrayDeviceCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Id}" ToolTip="{Binding TrayHint}" AutomationProperties.Name="{Binding TrayHint}">
                                 <TextBlock x:Name="TrayIcon" Style="{StaticResource Glyph}" Text="{Binding TrayGlyph}" Foreground="{DynamicResource Text}"/>
+                            </Button>
+                            <Button x:Name="IgnoreButton" Style="{StaticResource IconButton}" Visibility="Collapsed" Command="{Binding DataContext.IgnoreDeviceCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding Id}" ToolTip="Скрыть устройство из списка" AutomationProperties.Name="{Binding IgnoreName}">
+                                <TextBlock Style="{StaticResource Glyph}" Text="&#xE711;" FontSize="12" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                             </Button>
                             <Button x:Name="ExpandButton" Style="{StaticResource IconButton}" Command="{Binding DataContext.ToggleExpandedCommand, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" ToolTip="Как получено показание" AutomationProperties.Name="{Binding ExpandName}">
                                 <TextBlock x:Name="Chevron" Style="{StaticResource Glyph}" Text="&#xE70D;" FontSize="12" Foreground="{DynamicResource Muted}"/>
@@ -54,6 +57,7 @@
                 <DataTrigger Binding="{Binding IsMeasured}" Value="False">
                     <Setter TargetName="Ruler" Property="Visibility" Value="Collapsed"/>
                     <Setter TargetName="Numeral" Property="Visibility" Value="Collapsed"/>
+                    <Setter TargetName="IgnoreButton" Property="Visibility" Value="Visible"/>
                     <Setter TargetName="Names" Property="Grid.ColumnSpan" Value="2"/>
                     <Setter TargetName="NameText" Property="Foreground" Value="{DynamicResource Muted}"/>
                 </DataTrigger>
@@ -179,9 +183,16 @@
                     <TextBlock Style="{StaticResource Caps}" Text="ЗНАЧОК РЯДОМ С ЧАСАМИ" Margin="4,36,0,12"/>
                     <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,1" Padding="4,18">
                         <StackPanel>
-                            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Text="Каждое подключённое устройство с батареей получает свой значок. Наведите курсор — панель покажет все устройства. Двойной щелчок открывает окно, правый — меню."/>
+                            <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Text="Один значок. Он показывает DualSense, а если его нет — устройство с наименьшим зарядом; другое устройство можно закрепить булавкой в его строке. Наведите курсор — панель покажет все подключённые устройства с зарядом. Двойной щелчок открывает окно, правый — меню."/>
                             <WrapPanel Margin="0,18,0,0" x:Name="TrayLegend"/>
                         </StackPanel>
+                    </Border>
+
+                    <TextBlock Style="{StaticResource Caps}" Text="СКРЫТЫЕ УСТРОЙСТВА" Margin="4,36,0,12"/>
+                    <Border BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,1" Padding="4,16">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel><TextBlock FontWeight="SemiBold"><Run Text="Скрыто устройств: "/><Run Text="{Binding IgnoredCount, Mode=OneWay}"/></TextBlock><TextBlock Style="{StaticResource Meta}" TextWrapping="Wrap" MaxWidth="560" HorizontalAlignment="Left" Margin="0,4,0,0" Text="Старые и ненужные устройства скрываются крестиком в их строке. Новые устройства появляются сами."/></StackPanel>
+                            <Button Grid.Column="1" Content="Показать снова" Command="{Binding RestoreIgnoredCommand}" VerticalAlignment="Center" IsEnabled="{Binding HasIgnored}"/></Grid>
                     </Border>
 
                     <TextBlock Style="{StaticResource Caps}" Text="ОТКУДА БЕРУТСЯ ДАННЫЕ" Margin="4,36,0,12"/>

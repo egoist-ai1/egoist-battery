@@ -73,8 +73,8 @@ public partial class App : Application
             tray = new(ShowWindow, () => Dispatcher.BeginInvoke(async () => await viewModel.RefreshAsync()), () => Dispatcher.BeginInvoke(ExitApplication));
             viewModel.Updated += devices =>
             {
-                tray.Update(devices, viewModel.HiddenTrayDevices, viewModel.Notifications, viewModel.LowThreshold);
-                try { store.WriteJson("tray-state.json", new { UpdatedAt = DateTimeOffset.Now, DeviceIconCount = tray.DeviceIconCount, WindowCreated = window is not null, BackgroundIntervalSeconds = viewModel.EffectiveRefreshSeconds, CardCount = viewModel.DeviceRowCount, Devices = TrayPolicy.VisibleDevices(devices, viewModel.HiddenTrayDevices).Select(x => new { x.Name, Level = x.Reading.Label }) }); }
+                tray.Update(devices, viewModel.PinnedTrayDevice, viewModel.Notifications, viewModel.LowThreshold);
+                try { store.WriteJson("tray-state.json", new { UpdatedAt = DateTimeOffset.Now, DeviceIconCount = tray.DeviceIconCount, IconDevice = tray.IconDeviceId, WindowCreated = window is not null, BackgroundIntervalSeconds = viewModel.EffectiveRefreshSeconds, CardCount = viewModel.DeviceRowCount, Devices = TrayPolicy.VisibleDevices(devices).Select(x => new { x.Name, Level = x.Reading.Label }) }); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { store.Log(ex); }
             };
             activationWait = ThreadPool.RegisterWaitForSingleObject(activateEvent, (_, _) => Dispatcher.BeginInvoke(ShowWindow), null, Timeout.Infinite, false);
@@ -175,23 +175,25 @@ public partial class App : Application
             if (args.Contains("--ui-test"))
             {
                 using var trayCheck = new TrayController(() => { }, () => { }, () => { }, true);
-                trayCheck.Update(devices, [], false, 20);
-                if (trayCheck.DeviceIconCount != TrayPolicy.VisibleDevices(devices).Count) throw new InvalidOperationException("Не созданы отдельные значки устройств.");
-                trayCheck.Update([], [], false, 20);
+                var expectedIcon = TrayPolicy.IconDevice(devices);
+                trayCheck.Update(devices, null, false, 20);
+                if (trayCheck.DeviceIconCount != (expectedIcon is null ? 0 : 1) || trayCheck.IconDeviceId != expectedIcon?.Id) throw new InvalidOperationException("Значок трея показывает не то устройство.");
+                trayCheck.Update([], null, false, 20);
                 if (trayCheck.DeviceIconCount != 0) throw new InvalidOperationException("Значок отключённого устройства остался в трее.");
-                trayCheck.Update(devices, [], false, 20);
-                if (trayCheck.DeviceIconCount != TrayPolicy.VisibleDevices(devices).Count) throw new InvalidOperationException("Значки не восстановились после подключения.");
-                foreach (var value in new[] { "10", "10+", "20", "90", "100", "?", "battery" })
+                trayCheck.Update(devices, null, false, 20);
+                if (trayCheck.DeviceIconCount != (expectedIcon is null ? 0 : 1)) throw new InvalidOperationException("Значок не восстановился после подключения.");
+                foreach (var value in new[] { "10", "10+", "45", "90", "100", "?", "battery" })
                 {
-                    using var trayIcon = TrayController.DrawIcon(value, int.TryParse(value.TrimEnd('+'), out var level) ? level : null, value == "10+" ? BatteryTone.Charging : value == "10" ? BatteryTone.Critical : value == "20" ? BatteryTone.Low : value is "?" or "battery" ? BatteryTone.Unknown : BatteryTone.Normal, pixelSize: 64);
+                    double? shade = int.TryParse(value.TrimEnd('+'), out var level) ? level / 100d : null;
+                    using var trayIcon = TrayController.DrawIcon(value, shade, value == "10+", pixelSize: 64);
                     using var trayBitmap = trayIcon.ToBitmap(); trayBitmap.Save(Path.Combine(store.DirectoryPath, $"tray-{value.Replace("?", "unknown")}.png"), System.Drawing.Imaging.ImageFormat.Png);
                 }
                 SaveTrayPreview(store.DirectoryPath);
                 if (!TrayController.CanLocateIcons) throw new InvalidOperationException("В этой версии .NET у NotifyIcon нет полей для определения положения значка; панель трея работает по запасному способу.");
-                trayCheck.CheckFlyout(TrayPolicy.VisibleDevices(devices).FirstOrDefault()?.Id);
+                trayCheck.CheckFlyout(trayCheck.IconDeviceId);
                 foreach (var flyoutScale in new[] { 1f, 1.5f, 2f })
                 {
-                    using var preview = trayCheck.RenderFlyoutPreview(flyoutScale, TrayPolicy.VisibleDevices(devices).FirstOrDefault()?.Id);
+                    using var preview = trayCheck.RenderFlyoutPreview(flyoutScale, trayCheck.IconDeviceId);
                     preview.Save(Path.Combine(store.DirectoryPath, $"tray-flyout-{flyoutScale * 100:0}.png"), System.Drawing.Imaging.ImageFormat.Png);
                 }
                 await Settle(); SavePreview(testWindow.RootContent, Path.Combine(store.DirectoryPath, "devices.png"));
@@ -269,16 +271,16 @@ public partial class App : Application
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         var devices = SnapshotMerger.Merge((await monitor.ScanAsync(budget.Token)).SelectMany(x => x.Devices));
         using var trayCheck = new TrayController(() => { }, () => { }, () => { });
-        trayCheck.Update(devices, [], false, 20);
+        trayCheck.Update(devices, null, false, 20);
         await Task.Delay(600);
         var steps = new List<string>();
         try
         {
             steps.Add($"Значков: {trayCheck.DeviceIconCount}; поля NotifyIcon найдены: {TrayController.CanLocateIcons}; устройств: {devices.Count}");
-            if (trayCheck.FirstIcon() is not { } first) throw new InvalidOperationException("Оболочка Windows не вернула положение значка (значков: " + trayCheck.DeviceIconCount + ").");
-            steps.Add($"Положение значка: {first.Icon}");
-            trayCheck.CursorSource = () => new System.Drawing.Point(first.Icon.Left + first.Icon.Width / 2, first.Icon.Top + first.Icon.Height / 2);
-            if (!trayCheck.PostHover(first.Id)) throw new InvalidOperationException("Сообщение наведения не отправлено.");
+            if (trayCheck.IconRect() is not { } first) throw new InvalidOperationException("Оболочка Windows не вернула положение значка (устройств: " + devices.Count + ").");
+            steps.Add($"Положение значка: {first}");
+            trayCheck.CursorSource = () => new System.Drawing.Point(first.Left + first.Width / 2, first.Top + first.Height / 2);
+            if (!trayCheck.PostHover()) throw new InvalidOperationException("Сообщение наведения не отправлено.");
             var shown = false;
             for (var i = 0; i < 30 && !shown; i++) { await Task.Delay(100); shown = trayCheck.FlyoutVisible; }
             steps.Add($"Панель появилась: {shown}");
@@ -339,10 +341,10 @@ public partial class App : Application
     private static void SaveTrayPreview(string directory)
     {
         // Две панели задач (тёмная и светлая), значки в реальных размерах 16 и 24 пикселя и в увеличении.
-        var cases = new (string Value, int? Percent, BatteryTone Tone, string Caption)[]
+        var cases = new (string Value, double? Level, bool Charging, string Caption)[]
         {
-            ("90", 90, BatteryTone.Normal, "90%"), ("10+", 10, BatteryTone.Charging, "10+ заряжается"), ("15", 15, BatteryTone.Low, "15% низкий"),
-            ("8", 8, BatteryTone.Critical, "8% критический"), ("100", 100, BatteryTone.Charging, "100%"), ("?", null, BatteryTone.Unknown, "нет данных")
+            ("100", 1, false, "100%"), ("90", 0.9, false, "90%"), ("60", 0.6, false, "60%"), ("35", 0.35, false, "35%"),
+            ("15", 0.15, false, "15%"), ("8", 0.08, false, "8%"), ("10+", 0.14, true, "10+ заряжается"), ("?", null, false, "нет данных")
         };
         using var bitmap = new System.Drawing.Bitmap(cases.Length * 120 + 24, 2 * 150 + 8);
         using var graphics = System.Drawing.Graphics.FromImage(bitmap);
@@ -356,14 +358,14 @@ public partial class App : Application
             using var text = new System.Drawing.SolidBrush(light ? System.Drawing.Color.FromArgb(70, 80, 85) : System.Drawing.Color.FromArgb(170, 184, 190));
             for (var i = 0; i < cases.Length; i++)
             {
-                var (value, percent, tone, caption) = cases[i];
+                var (value, percent, charging, caption) = cases[i];
                 var x = 24 + i * 120;
                 foreach (var (size, y, shown) in new[] { (16, 14, 16), (24, 14 + 16 + 12, 24) })
                 {
-                    using var icon = TrayController.DrawIcon(value, percent, tone, light, size);
+                    using var icon = TrayController.DrawIcon(value, percent, charging, light, size);
                     graphics.DrawIcon(icon, new System.Drawing.Rectangle(x + (size == 16 ? 0 : 28), top + 12, shown, shown));
                 }
-                using var big = TrayController.DrawIcon(value, percent, tone, light, 64);
+                using var big = TrayController.DrawIcon(value, percent, charging, light, 64);
                 graphics.DrawIcon(big, new System.Drawing.Rectangle(x, top + 44, 64, 64));
                 graphics.DrawString(caption, font, text, x - 4, top + 118);
             }

@@ -14,13 +14,15 @@ using Point = System.Drawing.Point;
 using Size = System.Drawing.Size;
 
 /// <summary>Строка панели: всё, что нужно для рисования, без ссылок на устройства.</summary>
-internal sealed record FlyoutRow(string Id, string Name, string Meta, string Glyph, BatteryTone Tone, string Numeral, int Cells, int Solid, int Interval, bool Measured, bool Charging);
+internal sealed record FlyoutRow(string Id, string Name, string Meta, string Glyph, BatteryTone Tone, string Numeral, int Cells, int Solid, int Interval, bool Measured, bool Charging, double? Level = null);
 
 internal sealed record FlyoutModel(IReadOnlyList<FlyoutRow> Rows, string Time)
 {
-    public static FlyoutModel From(IEnumerable<DeviceSnapshot> devices, int threshold)
+    public static FlyoutModel From(IEnumerable<DeviceSnapshot> devices, int threshold, string? first = null)
     {
-        var connected = DevicePresentation.Order(devices.Where(x => x.Connected)).ToArray();
+        // Панель показывает устройства, у которых есть заряд; без данных о заряде в ней смотреть нечего.
+        var connected = DevicePresentation.Order(devices.Where(x => x.Connected && x.Reading.HasData))
+            .OrderByDescending(x => string.Equals(x.Id, first, StringComparison.OrdinalIgnoreCase)).ToArray();
         var rows = connected.Select(x =>
         {
             var tone = DevicePresentation.ToneOf(x.Reading, threshold);
@@ -28,7 +30,8 @@ internal sealed record FlyoutModel(IReadOnlyList<FlyoutRow> Rows, string Time)
             var state = x.Reading.State switch { ChargeState.Charging => "Заряжается", ChargeState.Full => "Зарядка завершена", ChargeState.Discharging => "Питание от батареи", ChargeState.Wired => "Проводное питание", ChargeState.Error => "Ошибка зарядки", _ => measured ? "Состояние зарядки неизвестно" : "Заряд не передаётся" };
             var (solid, interval) = measured ? DevicePresentation.Cells(x.Reading) : (0, 0);
             return new FlyoutRow(x.Id, x.Name, $"{state} · {x.Transport}", GlyphOf(x.Kind), measured || tone == BatteryTone.Error ? tone : BatteryTone.Unknown,
-                measured ? x.Reading.Label : "—", DevicePresentation.CellCount(x.Reading), solid, interval, measured, measured && tone == BatteryTone.Charging);
+                measured ? x.Reading.Label : "—", DevicePresentation.CellCount(x.Reading), solid, interval, measured, measured && tone == BatteryTone.Charging,
+                tone == BatteryTone.Error ? null : BatterySpectrum.LevelOf(x.Reading));
         }).ToArray();
         var time = connected.Length == 0 ? DateTimeOffset.Now : connected.Max(x => x.Reading.ObservedAt);
         return new(rows, time.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture));
@@ -146,7 +149,7 @@ internal sealed class TrayFlyout : Forms.Form
             var row = item.Row!;
             if (row.Id == highlightId) { using var path = Rounded(Rectangle.Round(new RectangleF(r.X - 6 * scale, r.Y - 2 * scale, r.Width + 12 * scale, r.Height + 4 * scale)), 8 * scale); using var hi = new SolidBrush(Palette.Raised); g.FillPath(hi, path); }
             else if (item.Separator) g.DrawLine(linePen, r.X, r.Y - 3 * scale, r.Right, r.Y - 3 * scale);
-            var tone = Palette.Tone(row.Tone);
+            var tone = row.Level is { } shade ? Palette.Spectrum(shade) : Palette.Tone(row.Tone);
             using var toneBrush = new SolidBrush(tone);
             g.DrawString(row.Glyph, fonts.Icon, row.Measured ? toneBrush : faintBrush, r.X, r.Y + 3 * scale, StringFormat.GenericTypographic);
             var nameBrush = row.Measured ? textBrush : mutedBrush;
@@ -176,8 +179,7 @@ internal sealed class TrayFlyout : Forms.Form
         var cells = row.Cells;
         var gap = Math.Max(1, (float)Math.Round((cells <= 6 ? 6 : 2) * scale));
         var cell = (area.Width - gap * (cells - 1)) / cells;
-        using var fill = new SolidBrush(tone); using var track = new SolidBrush(Palette.Track);
-        using var hatch = new HatchBrush(HatchStyle.WideUpwardDiagonal, tone, Palette.Track);
+        using var track = new SolidBrush(Palette.Track);
         var prior = g.SmoothingMode; g.SmoothingMode = SmoothingMode.None;
         for (var i = 0; i < cells; i++)
         {
@@ -185,6 +187,9 @@ internal sealed class TrayFlyout : Forms.Form
             var w = Math.Max(1, (float)Math.Round(area.X + i * (cell + gap) + cell) - x);
             var filled = i < row.Solid; var interval = !filled && i >= row.Solid && i < row.Solid + row.Interval;
             var h = filled || interval ? area.Height : (float)Math.Round(area.Height * 0.56f);
+            // Каждое деление окрашено по своему месту на шкале: красный → жёлтый → лайм.
+            var color = row.Level is not null ? Palette.Spectrum((i + 0.5) / cells) : tone;
+            using var fill = new SolidBrush(color); using var hatch = new HatchBrush(HatchStyle.WideUpwardDiagonal, color, Palette.Track);
             g.FillRectangle(filled ? fill : interval ? hatch : track, x, area.Bottom - h, w, h);
         }
         g.SmoothingMode = prior;
@@ -203,6 +208,7 @@ internal sealed class TrayFlyout : Forms.Form
         public static readonly Color Surface = Color.FromArgb(20, 24, 27), Raised = Color.FromArgb(31, 38, 42), Line = Color.FromArgb(38, 46, 51), LineStrong = Color.FromArgb(49, 58, 64);
         public static readonly Color Text = Color.FromArgb(237, 239, 238), Muted = Color.FromArgb(142, 154, 159), Faint = Color.FromArgb(122, 135, 140), Track = Color.FromArgb(40, 48, 53);
         public static int Rgb(Color c) => c.R | c.G << 8 | c.B << 16;
+        public static Color Spectrum(double level) { var (r, g, b) = BatterySpectrum.At(level); return Color.FromArgb(r, g, b); }
         public static Color Tone(BatteryTone tone) => tone switch
         {
             BatteryTone.Charging => Color.FromArgb(198, 242, 78), BatteryTone.Low => Color.FromArgb(246, 200, 121),

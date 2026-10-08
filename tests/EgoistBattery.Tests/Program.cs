@@ -80,4 +80,16 @@ var lowDevice = new DeviceSnapshot("ds", "DualSense", "Контроллер", "B
 var ordered = DevicePresentation.Order([offlineDevice, silentDevice, mouse, lowDevice]);
 Check(ordered.Select(x => x.Id).SequenceEqual(["ds", "mouse", "kb", "hp"]), "Порядок: меньше заряда выше, затем без данных, затем отключённые");
 Check(DevicePresentation.GroupOf(silentDevice) == DeviceGroup.Silent && DevicePresentation.GroupOf(offlineDevice) == DeviceGroup.Offline && DevicePresentation.GroupOf(mouse) == DeviceGroup.Measured, "Группы устройств");
+var spectrumLow = BatterySpectrum.At(0); var spectrumFull = BatterySpectrum.At(1); var spectrumMid = BatterySpectrum.At(0.5);
+Check(spectrumLow == ((byte)255, (byte)90, (byte)79) && spectrumFull == ((byte)198, (byte)242, (byte)78) && spectrumMid == ((byte)246, (byte)216, (byte)74), "Спектр: красный, жёлтый, лайм");
+Check(BatterySpectrum.At(-3) == spectrumLow && BatterySpectrum.At(9) == spectrumFull, "Спектр ограничен краями");
+var spectrumQuarter = BatterySpectrum.At(0.125); Check(spectrumQuarter.R == 255 && spectrumQuarter.G > 90 && spectrumQuarter.G < 165, "Спектр плавный между красным и оранжевым");
+Check(BatterySpectrum.LevelOf(interval) is { } mid && Math.Abs(mid - 0.14) < 0.001 && BatterySpectrum.LevelOf(coarse) == 0.375 && BatterySpectrum.LevelOf(BatteryReading.Missing("t", "r")) is null, "Доля для окраски");
+var dualSense = new DeviceSnapshot("ds", "DualSense Wireless Controller", "Контроллер", "Bluetooth", true, BatteryReading.Percentage(95, "t", ReadingQuality.Live));
+var lowMouse = new DeviceSnapshot("m", "Мышь", "Мышь", "USB", true, BatteryReading.Percentage(10, "t", ReadingQuality.Live));
+Check(TrayPolicy.IconDevice([lowMouse, dualSense])?.Id == "ds", "Значок трея: приоритет DualSense");
+Check(TrayPolicy.IconDevice([lowMouse, dualSense], "m")?.Id == "m", "Значок трея: закреплённое устройство");
+Check(TrayPolicy.IconDevice([lowMouse, dualSense with { Connected = false }])?.Id == "m", "Значок трея: отключённый DualSense не выбирается");
+Check(TrayPolicy.IconDevice([lowMouse, mouse])?.Id == "m", "Значок трея: без DualSense — наименьший заряд");
+Check(TrayPolicy.IconDevice([]) is null, "Значок трея: нет устройств");
 Console.WriteLine($"PASS: {checks} проверок протокола, точности и объединения устройств.");

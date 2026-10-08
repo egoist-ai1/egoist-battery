@@ -17,6 +17,7 @@ internal sealed class LevelRuler : FrameworkElement
     public static readonly DependencyProperty CellsProperty = DependencyProperty.Register(nameof(Cells), typeof(int), typeof(LevelRuler), new FrameworkPropertyMetadata(DevicePresentation.RulerCells, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty FillProperty = DependencyProperty.Register(nameof(Fill), typeof(Brush), typeof(LevelRuler), new FrameworkPropertyMetadata(Brushes.White, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty TrackProperty = DependencyProperty.Register(nameof(Track), typeof(Brush), typeof(LevelRuler), new FrameworkPropertyMetadata(Brushes.Gray, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty SpectrumProperty = DependencyProperty.Register(nameof(Spectrum), typeof(bool), typeof(LevelRuler), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty DelayProperty = DependencyProperty.Register(nameof(Delay), typeof(int), typeof(LevelRuler), new PropertyMetadata(0));
     private static readonly DependencyProperty ShownProperty = DependencyProperty.Register("Shown", typeof(double), typeof(LevelRuler), new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
 
@@ -27,6 +28,8 @@ internal sealed class LevelRuler : FrameworkElement
     public int Cells { get => (int)GetValue(CellsProperty); set => SetValue(CellsProperty, value); }
     public Brush Fill { get => (Brush)GetValue(FillProperty); set => SetValue(FillProperty, value); }
     public Brush Track { get => (Brush)GetValue(TrackProperty); set => SetValue(TrackProperty, value); }
+    /// <summary>Каждое деление окрашено по своему месту на шкале: красный → жёлтый → лайм.</summary>
+    public bool Spectrum { get => (bool)GetValue(SpectrumProperty); set => SetValue(SpectrumProperty, value); }
     public int Delay { get => (int)GetValue(DelayProperty); set => SetValue(DelayProperty, value); }
 
     public LevelRuler()
@@ -65,7 +68,6 @@ internal sealed class LevelRuler : FrameworkElement
         var shown = (int)Math.Floor((double)GetValue(ShownProperty) + 0.5);
         var solid = Solid;
         var minorHeight = Math.Round(height * 0.56 * ppd) / ppd;
-        var hatch = HatchBrush();
         for (var i = 0; i < count; i++)
         {
             var x = Math.Round(i * (cell + gap) * ppd) / ppd;
@@ -73,18 +75,30 @@ internal sealed class LevelRuler : FrameworkElement
             var filled = i < shown;
             var interval = !filled && i >= solid && i < solid + Interval && shown >= solid;
             var h = filled || interval ? height : minorHeight;
-            dc.DrawRectangle(filled ? Fill : interval ? hatch : Track, null, new Rect(x, height - h, Math.Max(1 / ppd, right - x), h));
+            var color = Spectrum ? CellBrush(i, count) : Fill;
+            dc.DrawRectangle(filled ? color : interval ? Hatch(color) : Track, null, new Rect(x, height - h, Math.Max(1 / ppd, right - x), h));
         }
     }
 
-    private Brush HatchBrush()
+    private static readonly Dictionary<(int, int), SolidColorBrush> CellBrushes = [];
+    private static SolidColorBrush CellBrush(int index, int count)
     {
-        if (Fill is not SolidColorBrush solid) return Fill;
+        if (CellBrushes.TryGetValue((count, index), out var cached)) return cached;
+        var (r, g, b) = BatterySpectrum.At((index + 0.5) / count);
+        var brush = new SolidColorBrush(Color.FromRgb(r, g, b)); brush.Freeze();
+        return CellBrushes[(count, index)] = brush;
+    }
+
+    private readonly Dictionary<Brush, Brush> hatches = [];
+    private Brush Hatch(Brush fill)
+    {
+        if (fill is not SolidColorBrush solid) return fill;
+        if (hatches.TryGetValue(fill, out var cached)) return cached;
         var tile = new DrawingGroup();
         tile.Children.Add(new GeometryDrawing(Track, null, new RectangleGeometry(new Rect(0, 0, 4, 4))));
         tile.Children.Add(new GeometryDrawing(null, new System.Windows.Media.Pen(solid, 1.2), Geometry.Parse("M -1,5 L 5,-1 M -1,1 L 1,-1 M 3,5 L 5,3")));
         var brush = new DrawingBrush(tile) { TileMode = TileMode.Tile, Viewport = new Rect(0, 0, 4, 4), ViewportUnits = BrushMappingMode.Absolute, Viewbox = new Rect(0, 0, 4, 4), ViewboxUnits = BrushMappingMode.Absolute };
         brush.Freeze();
-        return brush;
+        return hatches[fill] = brush;
     }
 }
