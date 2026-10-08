@@ -57,4 +57,27 @@ Check(TrayPolicy.VisibleDevices([mouse with { Kind = "Приёмник", Reading
 var bridged = SnapshotMerger.Merge([new("pnp", "Headset HFP", "Устройство", "Bluetooth", false, stale, "container"), new("bt", "Headset", "Наушники", "Bluetooth", true, BatteryReading.Missing("Windows", "Нет поля"), "container", "ABC")]);
 Check(bridged.Count == 1 && bridged[0].Connected && bridged[0].Reading == stale && bridged[0].Name == "Headset", "Кеш PnP объединяется с реальным состоянием Bluetooth");
 Check(bridged[0].Id == "identity:ABC", "Стабильный идентификатор значка независимо от источника");
+// Показ: тон, порядок, группы и деления шкалы общие для окна и панели трея.
+Check(DevicePresentation.ToneOf(mouse.Reading) == BatteryTone.Normal, "90% — обычный тон");
+Check(DevicePresentation.ToneOf(BatteryReading.Percentage(18, "t", ReadingQuality.Live, ChargeState.Discharging)) == BatteryTone.Low, "18% — низкий");
+Check(DevicePresentation.ToneOf(BatteryReading.Percentage(8, "t", ReadingQuality.Live, ChargeState.Discharging)) == BatteryTone.Critical, "8% — критический");
+Check(DevicePresentation.ToneOf(BatteryReading.Percentage(8, "t", ReadingQuality.Live, ChargeState.Charging)) == BatteryTone.Charging, "Зарядка важнее низкого уровня");
+Check(DevicePresentation.ToneOf(PlayStationParser.ParseDualSenseStatus(0xA7, "t")) == BatteryTone.Error, "Ошибка — отдельный тон");
+Check(DevicePresentation.ToneOf(BatteryReading.Missing("t", "r")) == BatteryTone.Unknown, "Нет данных — неизвестный тон");
+Check(DevicePresentation.ToneOf(coarse) == BatteryTone.Low, "Категория «Низкий» даёт низкий тон");
+Check(DevicePresentation.ToneOf(BatteryReading.Percentage(30, "t", ReadingQuality.Live, ChargeState.Discharging), 40) == BatteryTone.Low, "Порог берётся из настроек");
+Check(DevicePresentation.Cells(mouse.Reading) == (27, 0), "90% = 27 из 30 делений");
+Check(DevicePresentation.Cells(BatteryReading.Percentage(100, "t", ReadingQuality.Live)) == (30, 0), "100% = все деления");
+Check(DevicePresentation.Cells(BatteryReading.Percentage(0, "t", ReadingQuality.Live)) == (0, 0), "0% = пустая шкала");
+Check(DevicePresentation.Cells(BatteryReading.Percentage(2, "t", ReadingQuality.Live)) == (1, 0), "Малый заряд виден хотя бы одним делением");
+var interval = PlayStationParser.ParseDualSenseStatus(0x01, "t");
+Check(DevicePresentation.Cells(interval) == (3, 3), "Интервал 10–19% — сплошные деления и штриховка");
+Check(DevicePresentation.CellCount(coarse) == 4 && DevicePresentation.Cells(coarse) == (2, 0) && DevicePresentation.CellCount(mouse.Reading) == 30, "Категория рисуется четырьмя ступенями, а не процентом");
+Check(DevicePresentation.TrayValue(interval) == "10+" && DevicePresentation.TrayValue(mouse.Reading) == "90" && DevicePresentation.TrayValue(coarse) == "?", "Текст значка трея");
+var silentDevice = new DeviceSnapshot("kb", "Impact 80", "Клавиатура", "USB", true, BatteryReading.Missing("USB", "нет"));
+var offlineDevice = new DeviceSnapshot("hp", "Наушники", "Наушники", "Bluetooth", false, stale);
+var lowDevice = new DeviceSnapshot("ds", "DualSense", "Контроллер", "Bluetooth", true, interval);
+var ordered = DevicePresentation.Order([offlineDevice, silentDevice, mouse, lowDevice]);
+Check(ordered.Select(x => x.Id).SequenceEqual(["ds", "mouse", "kb", "hp"]), "Порядок: меньше заряда выше, затем без данных, затем отключённые");
+Check(DevicePresentation.GroupOf(silentDevice) == DeviceGroup.Silent && DevicePresentation.GroupOf(offlineDevice) == DeviceGroup.Offline && DevicePresentation.GroupOf(mouse) == DeviceGroup.Measured, "Группы устройств");
 Console.WriteLine($"PASS: {checks} проверок протокола, точности и объединения устройств.");
